@@ -97,107 +97,46 @@ class AnkiConnect:
         key = request.get('key')
         reply = {'result': None, 'error': None}
 
-        try:
-            if key != util.setting('apiKey') and name != 'requestPermission':
-                raise Exception('valid api key must be provided')
+        # try:
+        if key != util.setting('apiKey') and name != 'requestPermission':
+            raise Exception('valid api key must be provided')
 
-            method = None
+        method = None
 
-            for methodName, methodInst in inspect.getmembers(self, predicate=inspect.ismethod):
-                apiVersionLast = 0
-                apiNameLast = None
+        for methodName, methodInst in inspect.getmembers(self, predicate=inspect.ismethod):
+            apiVersionLast = 0
+            apiNameLast = None
 
-                if getattr(methodInst, 'api', False):
-                    for apiVersion, apiName in getattr(methodInst, 'versions', []):
-                        if apiVersionLast < apiVersion <= version:
-                            apiVersionLast = apiVersion
-                            apiNameLast = apiName
+            if getattr(methodInst, 'api', False):
+                for apiVersion, apiName in getattr(methodInst, 'versions', []):
+                    if apiVersionLast < apiVersion <= version:
+                        apiVersionLast = apiVersion
+                        apiNameLast = apiName
 
-                    if apiNameLast is None and apiVersionLast == 0:
-                        apiNameLast = methodName
+                if apiNameLast is None and apiVersionLast == 0:
+                    apiNameLast = methodName
 
-                    if apiNameLast is not None and apiNameLast == name:
-                        method = methodInst
-                        break
+                if apiNameLast is not None and apiNameLast == name:
+                    method = methodInst
+                    break
 
-            if method is None:
-                raise Exception('unsupported action')
-            else:
-                reply['result'] = methodInst(**params)
+        if method is None:
+            raise Exception('unsupported action')
+        else:
+            reply['result'] = methodInst(**params)
 
-            if version <= 4:
-                reply = reply['result']
+        if version <= 4:
+            reply = reply['result']
 
-        except Exception as e:
-            reply['error'] = str(e)
+        # except Exception as e:
+        #     reply['error'] = str(e)
 
         self.logEvent('reply', reply)
         return reply
 
 
-    def window(self):
-        return aqt.mw
-
-
-    def reviewer(self):
-        reviewer = self.window().reviewer
-        if reviewer is None:
-            raise Exception('reviewer is not available')
-
-        return reviewer
-
-
-    def collection(self):
-        collection = self.window().col
-        if collection is None:
-            raise Exception('collection is not available')
-
-        return collection
-
-
-    def decks(self):
-        decks = self.collection().decks
-        if decks is None:
-            raise Exception('decks are not available')
-
-        return decks
-
-
-    def scheduler(self):
-        scheduler = self.collection().sched
-        if scheduler is None:
-            raise Exception('scheduler is not available')
-
-        return scheduler
-
-
-    def database(self):
-        database = self.collection().db
-        if database is None:
-            raise Exception('database is not available')
-
-        return database
-
-
-    def media(self):
-        media = self.collection().media
-        if media is None:
-            raise Exception('media is not available')
-
-        return media
-
-
-    def startEditing(self):
-        self.window().requireReset()
-
-
-    def stopEditing(self):
-        if self.collection() is not None:
-            self.window().maybeReset()
-
-
     def createNote(self, note):
-        collection = self.collection()
+        collection = util.collection()
 
         model = collection.models.byName(note['modelName'])
         if model is None:
@@ -294,13 +233,13 @@ class AnkiConnect:
 
     def getCard(self, card_id: int) -> Card:
         try:
-            return self.collection().getCard(card_id)
+            return util.collection().getCard(card_id)
         except NotFoundError:
             raise NotFoundError('Card was not found: {}'.format(card_id))
 
     def getNote(self, note_id: int) -> Note:
         try:
-            return self.collection().getNote(note_id)
+            return util.collection().getNote(note_id)
         except NotFoundError:
             raise NotFoundError('Note was not found: {}'.format(note_id))
 
@@ -325,7 +264,7 @@ class AnkiConnect:
             return {
                 "permission": "denied",
             }
-        
+
         msg = QMessageBox(None)
         msg.setWindowTitle("A website want to access to Anki")
         msg.setText(origin + " request permission to use Anki through AnkiConnect.\nDo you want to give it access ?")
@@ -417,7 +356,7 @@ class AnkiConnect:
 
     @util.api()
     def getCollectionStatsHTML(self, wholeCollection=True):
-        stats = self.collection().stats()
+        stats = util.collection().stats()
         stats.wholeCollection = wholeCollection
         return stats.report()
 
@@ -434,7 +373,7 @@ class AnkiConnect:
     @util.api()
     def deckNamesAndIds(self):
         decks = {}
-        for deck in self.deckNames():
+        for deck in util.deckNames():
             decks[deck] = self.decks().id(deck)
 
         return decks
@@ -456,58 +395,40 @@ class AnkiConnect:
 
     @util.api()
     def createDeck(self, deck):
-        try:
-            self.startEditing()
-            did = self.decks().id(deck)
-        finally:
-            self.stopEditing()
-
-        return did
+        with util.EditScope():
+            return self.decks().id(deck)
 
 
     @util.api()
     def changeDeck(self, cards, deck):
-        self.startEditing()
-
-        did = self.collection().decks.id(deck)
-        mod = anki.utils.intTime()
-        usn = self.collection().usn()
-
-        # normal cards
-        scids = anki.utils.ids2str(cards)
-        # remove any cards from filtered deck first
-        self.collection().sched.remFromDyn(cards)
-
-        # then move into new deck
-        self.collection().db.execute('update cards set usn=?, mod=?, did=? where id in ' + scids, usn, mod, did)
-        self.stopEditing()
+        with util.EditScope():
+            util.scheduler().remFromDyn(cards)
+            util.database().execute(
+                f'update cards set usn=?, mod=?, did=? where id in {anki.utils.ids2str(cards)}',
+                util.collection().usn(),
+                anki.utils.intTime(),
+                util.collection().decks.id(deck)
+            )
 
 
     @util.api()
     def deleteDecks(self, decks, cardsToo=False):
-        try:
-            self.startEditing()
-            decks = filter(lambda d: d in self.deckNames(), decks)
-            for deck in decks:
-                did = self.decks().id(deck)
-                self.decks().rem(did, cardsToo)
-        finally:
-            self.stopEditing()
+        with util.EditScope():
+            for deck in filter(lambda d: d in util.deckNames(), decks):
+                self.decks().rem(self.decks().id(deck), cardsToo)
 
 
     @util.api()
     def getDeckConfig(self, deck):
-        if deck not in self.deckNames():
+        if deck not in util.deckNames():
             return False
 
-        collection = self.collection()
-        did = collection.decks.id(deck)
-        return collection.decks.confForDid(did)
+        return util.decks().confForDid(util.decks().id(deck))
 
 
     @util.api()
     def saveDeckConfig(self, config):
-        collection = self.collection()
+        collection = util.collection()
 
         config['id'] = str(config['id'])
         config['mod'] = anki.utils.intTime()
@@ -525,10 +446,10 @@ class AnkiConnect:
     def setDeckConfigId(self, decks, configId):
         configId = str(configId)
         for deck in decks:
-            if not deck in self.deckNames():
+            if not deck in util.deckNames():
                 return False
 
-        collection = self.collection()
+        collection = util.collection()
         if configId not in collection.decks.dconf:
             return False
 
@@ -542,17 +463,17 @@ class AnkiConnect:
     @util.api()
     def cloneDeckConfigId(self, name, cloneFrom='1'):
         configId = str(cloneFrom)
-        if configId not in self.collection().decks.dconf:
+        if configId not in util.collection().decks.dconf:
             return False
 
-        config = self.collection().decks.getConf(configId)
-        return self.collection().decks.confId(name, config)
+        config = util.collection().decks.getConf(configId)
+        return util.collection().decks.confId(name, config)
 
 
     @util.api()
     def removeDeckConfigId(self, configId):
         configId = str(configId)
-        collection = self.collection()
+        collection = util.collection()
         if configId not in collection.decks.dconf:
             return False
 
@@ -620,7 +541,7 @@ class AnkiConnect:
 
         self.addMediaFromNote(ankiNote, note)
 
-        collection = self.collection()
+        collection = util.collection()
         self.startEditing()
         nCardsAdded = collection.addNote(ankiNote)
         if nCardsAdded < 1:
@@ -707,7 +628,7 @@ class AnkiConnect:
     @util.api()
     def addTags(self, notes, tags, add=True):
         self.startEditing()
-        self.collection().tags.bulkAdd(notes, tags, add)
+        util.collection().tags.bulkAdd(notes, tags, add)
         self.stopEditing()
 
 
@@ -718,12 +639,12 @@ class AnkiConnect:
 
     @util.api()
     def getTags(self):
-        return self.collection().tags.all()
+        return util.collection().tags.all()
 
 
     @util.api()
     def clearUnusedTags(self):
-        self.collection().tags.registerNotes()
+        util.collection().tags.registerNotes()
 
 
     @util.api()
@@ -750,7 +671,7 @@ class AnkiConnect:
     def replaceTagsInAllNotes(self, tag_to_replace, replace_with_tag):
         self.window().progress.start()
 
-        collection = self.collection()
+        collection = util.collection()
         for nid in collection.db.list('select id from notes'):
             note = self.getNote(nid)
             if note.hasTag(tag_to_replace):
@@ -845,7 +766,7 @@ class AnkiConnect:
             if self.findCards('cid:{} is:new'.format(card)):
                 due.append(True)
             else:
-                date, ivl = self.collection().db.all('select id/1000.0, ivl from revlog where cid = ?', card)[-1]
+                date, ivl = util.database().all('select id/1000.0, ivl from revlog where cid = ?', card)[-1]
                 if ivl >= -1200:
                     due.append(bool(self.findCards('cid:{} is:due'.format(card))))
                 else:
@@ -861,7 +782,7 @@ class AnkiConnect:
             if self.findCards('cid:{} is:new'.format(card)):
                 intervals.append(0)
             else:
-                interval = self.collection().db.list('select ivl from revlog where cid = ?', card)
+                interval = util.database().list('select ivl from revlog where cid = ?', card)
                 if not complete:
                     interval = interval[-1]
                 intervals.append(interval)
@@ -872,7 +793,7 @@ class AnkiConnect:
 
     @util.api()
     def modelNames(self):
-        return self.collection().models.allNames()
+        return util.collection().models.allNames()
 
 
     @util.api()
@@ -882,10 +803,10 @@ class AnkiConnect:
             raise Exception('Must provide at least one field for inOrderFields')
         if len(cardTemplates) == 0:
             raise Exception('Must provide at least one card for cardTemplates')
-        if modelName in self.collection().models.allNames():
+        if modelName in util.collection().models.allNames():
             raise Exception('Model name already exists')
 
-        collection = self.collection()
+        collection = util.collection()
         mm = collection.models
 
         # Generate new Note
@@ -923,14 +844,14 @@ class AnkiConnect:
     def modelNamesAndIds(self):
         models = {}
         for model in self.modelNames():
-            models[model] = int(self.collection().models.byName(model)['id'])
+            models[model] = int(util.collection().models.byName(model)['id'])
 
         return models
 
 
     @util.api()
     def modelNameFromId(self, modelId):
-        model = self.collection().models.get(modelId)
+        model = util.collection().models.get(modelId)
         if model is None:
             raise Exception('model was not found: {}'.format(modelId))
         else:
@@ -939,7 +860,7 @@ class AnkiConnect:
 
     @util.api()
     def modelFieldNames(self, modelName):
-        model = self.collection().models.byName(modelName)
+        model = util.collection().models.byName(modelName)
         if model is None:
             raise Exception('model was not found: {}'.format(modelName))
         else:
@@ -948,7 +869,7 @@ class AnkiConnect:
 
     @util.api()
     def modelFieldsOnTemplates(self, modelName):
-        model = self.collection().models.byName(modelName)
+        model = util.collection().models.byName(modelName)
         if model is None:
             raise Exception('model was not found: {}'.format(modelName))
 
@@ -979,7 +900,7 @@ class AnkiConnect:
 
     @util.api()
     def modelTemplates(self, modelName):
-        model = self.collection().models.byName(modelName)
+        model = util.collection().models.byName(modelName)
         if model is None:
             raise Exception('model was not found: {}'.format(modelName))
 
@@ -992,7 +913,7 @@ class AnkiConnect:
 
     @util.api()
     def modelStyling(self, modelName):
-        model = self.collection().models.byName(modelName)
+        model = util.collection().models.byName(modelName)
         if model is None:
             raise Exception('model was not found: {}'.format(modelName))
 
@@ -1001,7 +922,7 @@ class AnkiConnect:
 
     @util.api()
     def updateModelTemplates(self, model):
-        models = self.collection().models
+        models = util.collection().models
         ankiModel = models.byName(model['name'])
         if ankiModel is None:
             raise Exception('model was not found: {}'.format(model['name']))
@@ -1024,7 +945,7 @@ class AnkiConnect:
 
     @util.api()
     def updateModelStyling(self, model):
-        models = self.collection().models
+        models = util.collection().models
         ankiModel = models.byName(model['name'])
         if ankiModel is None:
             raise Exception('model was not found: {}'.format(model['name']))
@@ -1038,28 +959,28 @@ class AnkiConnect:
     @util.api()
     def findAndReplaceInModels(self, modelName, findText, replaceText, front=True, back=True, css=True):
         if not modelName:
-            ankiModel = self.collection().models.allNames()
+            ankiModel = util.collection().models.allNames()
         else:
-            model = self.collection().models.byName(modelName)
+            model = util.collection().models.byName(modelName)
             if model is None:
                 raise Exception('model was not found: {}'.format(modelName))
             ankiModel = [model]
         updatedModels = 0
         for model in ankiModel:
-            model = self.collection().models.byName(model)
+            model = util.collection().models.byName(model)
             checkForText = False
             if css and findText in model['css']:
                 checkForText = True
-                model['css'] = model['css'].replace(findText, replaceText) 
+                model['css'] = model['css'].replace(findText, replaceText)
             for tmpls in model.get('tmpls'):
                 if front and findText in tmpls['qfmt']:
                     checkForText = True
                     tmpls['qfmt'] = tmpls['qfmt'].replace(findText, replaceText)
                 if back and findText in tmpls['afmt']:
                     checkForText = True
-                    tmpls['afmt'] = tmpls['afmt'].replace(findText, replaceText)                        
-            self.collection().models.save(model, True)
-            self.collection().models.flush()
+                    tmpls['afmt'] = tmpls['afmt'].replace(findText, replaceText)
+            util.collection().models.save(model, True)
+            util.collection().models.flush()
             if checkForText:
                 updatedModels += 1
         return updatedModels
@@ -1067,7 +988,7 @@ class AnkiConnect:
 
     @util.api()
     def deckNameFromId(self, deckId):
-        deck = self.collection().decks.get(deckId)
+        deck = util.collection().decks.get(deckId)
         if deck is None:
             raise Exception('deck was not found: {}'.format(deckId))
 
@@ -1079,7 +1000,7 @@ class AnkiConnect:
         if query is None:
             return []
 
-        return list(map(int, self.collection().findNotes(query)))
+        return list(map(int, util.collection().findNotes(query)))
 
 
     @util.api()
@@ -1087,7 +1008,7 @@ class AnkiConnect:
         if query is None:
             return []
 
-        return list(map(int, self.collection().findCards(query)))
+        return list(map(int, util.collection().findCards(query)))
 
 
     @util.api()
@@ -1140,7 +1061,7 @@ class AnkiConnect:
     def forgetCards(self, cards):
         self.startEditing()
         scids = anki.utils.ids2str(cards)
-        self.collection().db.execute('update cards set type=0, queue=0, left=0, ivl=0, due=0, odue=0, factor=0 where id in ' + scids)
+        util.database().execute('update cards set type=0, queue=0, left=0, ivl=0, due=0, odue=0, factor=0 where id in ' + scids)
         self.stopEditing()
 
 
@@ -1148,9 +1069,9 @@ class AnkiConnect:
     def relearnCards(self, cards):
         self.startEditing()
         scids = anki.utils.ids2str(cards)
-        self.collection().db.execute('update cards set type=3, queue=1 where id in ' + scids)
+        util.database().execute('update cards set type=3, queue=1 where id in ' + scids)
         self.stopEditing()
-            
+
 
     @util.api()
     def cardReviews(self, deck, startID):
@@ -1163,7 +1084,7 @@ class AnkiConnect:
 
     @util.api()
     def reloadCollection(self):
-        self.collection().reset()
+        util.collection().reset()
 
 
     @util.api()
@@ -1179,7 +1100,7 @@ class AnkiConnect:
         self.startEditing()
         did = self.decks().id(data['deck'])
         self.decks().flush()
-        model_manager = self.collection().models
+        model_manager = util.collection().models
         for _, card in data['cards'].items():
             self.database().execute(
                 'replace into cards (id, nid, did, ord, type, queue, due, ivl, factor, reps, lapses, left, '
@@ -1190,7 +1111,7 @@ class AnkiConnect:
                 intTime(), -1, 0, 0, 0, 0
             )
             note = data['notes'][str(card['nid'])]
-            tags = self.collection().tags.join(self.collection().tags.canonify(note['tags']))
+            tags = util.collection().tags.join(util.collection().tags.canonify(note['tags']))
             self.database().execute(
                 'replace into notes(id, mid, tags, flds,'
                 'guid, mod, usn, flags, data, sfld, csum) values (' + '?,' * (4 + 7 - 1) + '?)',
@@ -1242,7 +1163,7 @@ class AnkiConnect:
                     'tags' : note.tags,
                     'fields': fields,
                     'modelName': model['name'],
-                    'cards': self.collection().db.list('select id from cards where nid = ? order by ord', note.id)
+                    'cards': util.database().list('select id from cards where nid = ? order by ord', note.id)
                 })
             except NotFoundError:
                 # Anki will give a NotFoundError if the note ID does not exist.
@@ -1257,22 +1178,22 @@ class AnkiConnect:
     @util.api()
     def deleteNotes(self, notes):
         try:
-            self.collection().remNotes(notes)
+            util.collection().remNotes(notes)
         finally:
             self.stopEditing()
 
 
     @util.api()
     def removeEmptyNotes(self):
-        for model in self.collection().models.all():
-            if self.collection().models.useCount(model) == 0:
-                self.collection().models.rem(model)
+        for model in util.collection().models.all():
+            if util.collection().models.useCount(model) == 0:
+                util.collection().models.rem(model)
         self.window().requireReset()
 
 
     @util.api()
     def cardsToNotes(self, cards):
-        return self.collection().db.list('select distinct nid from cards where id in ' + anki.utils.ids2str(cards))
+        return util.database().list('select distinct nid from cards where id in ' + anki.utils.ids2str(cards))
 
 
     @util.api()
@@ -1293,7 +1214,7 @@ class AnkiConnect:
     @util.api()
     def guiAddCards(self, note=None):
         if note is not None:
-            collection = self.collection()
+            collection = util.collection()
 
             deck = collection.decks.byName(note['deckName'])
             if deck is None:
@@ -1393,7 +1314,7 @@ class AnkiConnect:
             return ankiNote.id
 
         elif note is not None:
-            collection = self.collection()
+            collection = util.collection()
             ankiNote = anki.notes.Note(collection, model)
 
             # fill out card beforehand, so we can be sure of the note id
@@ -1525,7 +1446,7 @@ class AnkiConnect:
 
     @util.api()
     def guiDeckOverview(self, name):
-        collection = self.collection()
+        collection = util.collection()
         if collection is not None:
             deck = collection.decks.byName(name)
             if deck is not None:
@@ -1580,7 +1501,7 @@ class AnkiConnect:
 
     @util.api()
     def exportPackage(self, deck, path, includeSched=False):
-        collection = self.collection()
+        collection = util.collection()
         if collection is not None:
             deck = collection.decks.byName(deck)
             if deck is not None:
@@ -1595,7 +1516,7 @@ class AnkiConnect:
 
     @util.api()
     def importPackage(self, path):
-        collection = self.collection()
+        collection = util.collection()
         if collection is not None:
             try:
                 self.startEditing()
